@@ -1,161 +1,132 @@
-[![builds.sr.ht status](https://builds.sr.ht/~exec64/imv.svg)](https://builds.sr.ht/~exec64/imv?)
-imv - X11/Wayland Image Viewer
-==============================
+# imv + OCR
 
-`imv` is a command line image viewer intended for use with tiling window managers.
+**Fork** do [imv](https://sr.ht/~exec64/imv) (visualizador de imagens
+minimalista para Wayland/X11, de **Harry Jeffery e contribuidores**) com uma
+camada de **OCR interativa**: reconhece o texto da imagem aberta e permite
+selecioná-lo e copiá-lo como em um editor de texto ou na camada de texto de
+um PDF.
 
-[Project home](https://sr.ht/~exec64/imv/)
+Todo o crédito do visualizador original vai para o autor e contribuidores do
+imv — este fork apenas adiciona a feature de OCR (baseada no **v5.0.1**) e um
+fix de eventos de mouse no backend Wayland. Desenvolvido com auxílio de IA
+(Kimi Code CLI).
 
-Features
---------
+> **Status:** versão inicial, pouco testada — validada apenas em um sistema
+> **Omarchy 4.0.4** (Arch Linux + Hyprland/Wayland). Pode não funcionar em
+> outros ambientes. Use por sua conta e risco.
 
-* Native Wayland and X11 support
-* Support for dozens of image formats including:
-  * PNG
-  * JPEG
-  * WebP
-  * Animated GIFs
-  * SVG
-  * TIFF
-  * Various RAW formats
-  * Photoshop PSD files
-* Configurable key bindings and behaviour
-* Highly scriptable with IPC via imv-msg
+## Motivação
 
-Packages
---------
+Screenshots, fotos de documentos, memes com texto, slides — constantemente
+queremos copiar um trecho de texto que está preso dentro de uma imagem. O
+fluxo tradicional é abrir um programa de OCR separado, exportar, copiar. Com
+este fork, o visualizador padrão de imagens já faz isso no lugar: abriu,
+`Shift+O`, arrastou, `Ctrl+C`.
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/imv.svg)](https://repology.org/project/imv/versions)
+## Como funciona
 
-Example Usage
--------------
+- O `tesseract` (API C) roda sobre os pixels RGBA já decodificados pelo imv —
+  funciona com qualquer formato que o imv abre (png, jpeg, webp, gif, heic,
+  jxl, tiff, svg...) e até com imagens vindas de stdin.
+- As caixas por palavra **e por caractere** (`RIL_SYMBOL`) são extraídas,
+  com fronteiras de palavra/linha fornecidas pelo próprio tesseract.
+- O overlay escurece a imagem exceto as áreas de texto (efeito holofote) e a
+  seleção é desenhada como highlight contínuo por linha.
 
-The following examples are a quick illustration of how you can use imv.
-For detailed documentation see the man page.
+## Uso
 
-    # Opening images
-    imv image1.png another_image.jpeg a_directory
+| Ação | Efeito |
+|---|---|
+| `Shift+O` ou botão inferior-direito | Liga/desliga o OCR |
+| Arrastar o mouse | Seleção caractere a caractere (padrão editor) |
+| Duplo clique | Seleciona a palavra |
+| Triplo clique | Seleciona a linha |
+| `Ctrl+A` | Seleciona todo o texto reconhecido |
+| `Ctrl+C` | Copia a seleção (`wl-copy` no Wayland, `xclip` no X11) |
+| `Esc` | 1ª vez: solta a seleção · 2ª vez: limpa o overlay |
 
-    # Opening a directory recursively
-    imv -r Photos
+Comandos de console (`:`) e IPC (`imv-msg <pid> <cmd>`):
 
-    # Opening images via stdin
-    find . -type f -name "*.svg" | imv
+- `ocr [lang]` — roda o OCR; idioma padrão `eng`. Ex.: `ocr por`, `ocr jpn`,
+  `ocr chi_sim`, `ocr por+eng`
+- `ocr_select_all` — seleciona tudo
+- `ocr_copy` — copia a seleção (sem seleção, não faz nada)
+- `ocr_clear` — solta a seleção / limpa o overlay
 
-    # Open an image fullscreen
-    imv -f image.jpeg
+Diagnóstico: rode com `IMV_OCR_DEBUG=1 imv imagem.png` para ver a barra de
+status (contagem de palavras/caracteres) e logs de press/drag/release no
+stderr.
 
-    # Viewing images in a random order
-    find . -type f -name "*.png" | shuf | imv
+## Instalação
 
-    # Viewing images from stdin
-    curl http://somesi.te/img.png | imv -
+Dependências de build: as do imv original (`meson`, `ninja`, `pango`, `cairo`,
+`inih`, backend(s) de janela) mais `tesseract` — detectado automaticamente;
+para forçar: `meson setup build -Dtesseract=enabled`.
 
-    # Viewing multiple images from the web
-    curl -Osw '%{filename_effective}\n' 'http://www.example.com/[1-10].jpg' | imv
+Dependências de runtime: dados de idioma do tesseract e uma ferramenta de
+clipboard:
 
-### Slideshow
+```bash
+# Arch Linux — idiomas (eng e por já costumam vir com o tesseract)
+sudo pacman -S tesseract-data-por tesseract-data-spa \
+  tesseract-data-jpn tesseract-data-chi_sim
+# clipboard no Wayland
+sudo pacman -S wl-clipboard
+```
 
-imv can be used to display slideshows. You can set the number of seconds to
-show each image for with the `-t` option at start up, or you can configure it
-at runtime using the `t` and `T` hotkeys to increase and decrease the image
-display time, respectively.
+Instalação como visualizador padrão do usuário (em `~/.local`, sem sudo):
 
-To cycle through a folder of pictures, showing each one for 10 seconds:
+```bash
+git clone <este-repo> && cd imv-change-ocr
+./install-viewer.sh
+```
 
-    imv -t 10 ~/Pictures/London
+O script é **idempotente**: rode-o novamente após `git pull`, após trocar de
+máquina, ou se o visualizador padrão parecer ter voltado ao imv da distro.
+Como a instalação fica em `~/.local` (que precede `/usr/bin` no PATH e
+`/usr/share` no `XDG_DATA_DIRS`), atualizações do pacote `imv` da distro
+**não afetam** esta versão — o pacote original permanece intacto como
+fallback.
 
-#### Custom configuration
+### Rollback
 
-imv's key bindings can be customised to trigger custom behaviour:
+```bash
+./rollback-viewer.sh
+```
 
-    [binds]
+Remove os arquivos de `~/.local` (e restos em `/usr/local`, se houver) e o
+sistema volta imediatamente ao `imv` da distro.
 
-    # Delete and then close an open image by pressing 'X'
-    <Shift+X> = exec rm "$imv_current_file"; close
+## Ferramentas e stack
 
-    # Rotate the currently open image by 90 degrees by pressing 'R'
-    <Shift+R> = exec mogrify -rotate 90 "$imv_current_file"
+- **C99** + [meson](https://mesonbuild.com)/ninja (build do imv original)
+- **[tesseract](https://github.com/tesseract-ocr/tesseract)** 5 + leptonica — motor OCR
+- **cairo/pango** — overlay e renderização de UI
+- **Wayland** (wlroots/XDG shell) e X11 — backends de janela
+- **wl-clipboard / xclip** — cópia para o clipboard
+- `IMV_OCR_DEBUG=1` — instrumentação de diagnóstico da seleção
 
-    # Use dmenu as a prompt for tagging the current image
-    u = exec echo "$imv_current_file" >> ~/tags/$(ls ~/tags | dmenu -p "tag")
+## Estrutura do fork
 
-### Scripting
+```
+src/ocr.c, src/ocr.h     wrapper da API C do tesseract (palavras + símbolos)
+src/imv.c                estado OCR, comandos, seleção por carets, overlay
+src/wl_window.c          fix: dmouse1 nunca era limpo (bug latente upstream)
+files/imv_config         binds OCR documentados
+install-viewer.sh        instala/reinstala em ~/.local (idempotente)
+rollback-viewer.sh       volta ao imv da distro
+docs/STATUS.md           histórico de decisões e testes do desenvolvimento
+docs/issues/             melhorias futuras (overlay visual)
+mockup/                  protótipo HTML/CSS/JS do overlay
+```
 
-With the default bindings, imv can be used to select images in a pipeline by
-using the `p` hotkey to print the current image's path to stdout. The `-l` flag
-can also be used to tell imv to list the remaining paths on exit for a "open
-set of images, close unwanted ones with `x`, then quit imv to pass the
-remaining images through" workflow.
+## Limitações conhecidas
 
-Key bindings can be customised to run arbitrary shell commands. Environment
-variables are exported to expose imv's state to scripts run by it. These
-scripts can in turn modify imv's behaviour by invoking `imv-msg` with
-`$imv_pid`.
+- Caixas de texto e seleção só com rotação 0 e sem espelhamento
+  (`docs/issues/001-overlay-ocr-visual.md`)
+- Texto vertical CJK não é tratado
+- OCR é síncrono (a UI congela por um instante em imagens grandes)
 
-For example:
+## Licença
 
-    #!/usr/bin/bash
-    imv "$@" &
-    imv_pid = $!
-
-    while true; do
-      # Some custom logic
-      # ...
-
-      # Close all open files
-      imv-msg $imv_pid close all
-      # Open some new files
-      imv-msg $imv_pid open ~/new_path
-
-      # Run another script against the currently open file
-      imv-msg $imv_pid exec another-script.sh '$imv_current_file'
-    done
-
-
-Installation
-------------
-
-### Dependencies
-
-| Library        |  Version |  Notes                                         |
-|---------------:|:---------|------------------------------------------------|
-| pthreads       |          | Required.                                      |
-| xkbcommon      |          | Required.                                      |
-| pangocairo     |          | Required.                                      |
-| icu            |          | Required.                                      |
-| X11            |          | Optional. Required for X11 support.            |
-| GL             |          | Optional. Required for X11 support.            |
-| xcb            |          | Optional. Required for X11 support.            |
-| xkbcommon-x11  |          | Optional. Required for X11 support.            |
-| wayland-client |          | Optional. Required for Wayland support.        |
-| wayland-egl    |          | Optional. Required for Wayland support.        |
-| EGL            |          | Optional. Required for Wayland support.        |
-| libtiff        |          | Optional. Provides TIFF support.               |
-| libpng         |          | Optional. Provides PNG support.                |
-| libjpeg-turbo  |          | Optional. Provides JPEG support.               |
-| librsvg        | >=v2.44  | Optional. Provides SVG support.                |
-| libnsgif       | 1.0.0    | Optional. Provides animated GIF support.       |
-| libnsbmp       |          | Optional. Provides BMP support.                |
-| libheif        | 1.13.0   | Optional. Provides HEIF support.               |
-| libjxl         |          | Optional. Provides JPEGXL support.             |
-| libwebp        |          | Optional. Provides WebP supprt.                |
-| qoi            |          | Optional. Provides QOI support.                |
-
-Dependencies are determined by which backends and window systems are enabled
-when building `imv`. You can find a summary of which backends are available
-in [meson_options.txt](meson_options.txt)
-
-    $ meson setup build/
-    $ ninja -C build/
-    # ninja -C build/ install
-
-`--prefix` controls installation prefix.  If more control over installation
-paths is required, `--bindir`, `--mandir` and `--datadir` are
-available.  Eg. to install `imv` to home directory, run:
-
-    $ meson setup --bindir=~/bin --prefix=~/.local
-
-License
--------
-`imv`'s source is published under the terms of the [MIT](LICENSE) license.
+MIT, como o imv original. Ver `LICENSE`.

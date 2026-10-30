@@ -1,21 +1,32 @@
 #!/bin/sh
-# Rollback: remove a versao OCR (instalada em /usr/local) e devolve o
-# visualizador ao imv da distro (pacote pacman em /usr/bin/imv), que nunca
-# foi alterado. /usr/local tem precedencia no PATH e no XDG_DATA_DIRS,
-# entao basta desinstalar os arquivos locais.
+# Rollback: remove o imv+OCR (instalado em ~/.local e, se houver, restos
+# em /usr/local) e devolve o visualizador ao imv da distro (pacote pacman
+# em /usr/bin/imv), que nunca foi alterado.
+# ~/.local/bin precede /usr/bin no PATH; removidos os arquivos locais,
+# o sistema volta automaticamente ao pacote original.
 set -e
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+echo "==> Removendo imv+OCR de ~/.local"
+rm -f "$HOME/.local/bin/imv" "$HOME/.local/bin/imv-wayland" \
+  "$HOME/.local/bin/imv-x11" "$HOME/.local/bin/imv-msg" \
+  "$HOME/.local/share/applications/imv.desktop" \
+  "$HOME/.local/share/applications/imv-dir.desktop" \
+  "$HOME/.local/etc/imv_config" \
+  "$HOME/.local/share/man/man1/imv.1"* \
+  "$HOME/.local/share/man/man1/imv-msg.1"* \
+  "$HOME/.local/share/man/man5/imv.5"*
 
-if [ ! -f "$SCRIPT_DIR/build/meson-logs/install_log.txt" ]; then
-  echo "Nada instalado (install_log.txt nao encontrado). Nada a fazer."
-  exit 0
+if [ -e /usr/local/bin/imv-wayland ]; then
+  echo "==> Removendo restos em /usr/local (sudo)"
+  sudo rm -f /usr/local/bin/imv /usr/local/bin/imv-wayland \
+    /usr/local/bin/imv-x11 /usr/local/bin/imv-msg \
+    /usr/local/share/applications/imv.desktop \
+    /usr/local/share/applications/imv-dir.desktop \
+    /usr/local/etc/imv_config \
+    /usr/local/share/man/man1/imv.1* /usr/local/share/man/man1/imv-msg.1* \
+    /usr/local/share/man/man5/imv.5*
 fi
 
-sudo ninja -C "$SCRIPT_DIR/build" uninstall
-rm -f "$SCRIPT_DIR/build/meson-logs/install_log.txt"
-
 echo
-echo "Rollback concluido."
-echo "imv agora resolve para: $(command -v imv)"
-echo "Se o terminal ainda abrir a versao antiga, rode: hash -r"
+echo "==> Rollback concluido. 'imv' agora resolve para: $(command -v imv)"
+echo "    (se o terminal mostrar outro caminho, rode: hash -r)"

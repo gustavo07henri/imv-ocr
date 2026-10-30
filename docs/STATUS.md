@@ -16,6 +16,25 @@
   `docs/issues/assets/001-estado-inicial.png` e `001-estado-pos-ocr.png`.
 - Issue de aperfeiçoamento futuro: `docs/issues/001-overlay-ocr-visual.md`.
 
+### Instalação migrada para ~/.local (2026-10-30)
+- Binário movido de `/usr/local` (root) para **`~/.local`** (usuário, sem
+  sudo): `~/.local/bin/imv*` + `~/.local/share/applications/imv*.desktop`.
+  Precedência no PATH e no XDG_DATA_DIRS mantém o shadowing do pacote da
+  distro. E2E revalidado com o binário de `~/.local`.
+- **`install-viewer.sh`** (novo): instala/reinstala idempotente em `~/.local`
+  e remove restos de `/usr/local` (única parte com sudo). É o método de
+  restauração após updates/reinstalação do sistema — embora updates do
+  pacote `imv` não toquem `~/.local`.
+- **`rollback-viewer.sh`** reescrito: remove `~/.local` e restos de
+  `/usr/local`.
+- README.md reescrito como README do fork (motivação, instalação, uso,
+  stack, limitações; aviso de versão inicial testada só no Omarchy 4.0.4,
+  créditos ao autor original, menção ao uso de IA).
+- Nota no Obsidian: `600 tutoriais/imv com OCR — instalação, restauração e
+  rollback.md`.
+- Config do usuário (`~/.config/imv/config`) **não é tocada**: binds OCR são
+  padrão compilado e coexistem com os binds pessoais.
+
 ### Instalação no sistema (2026-10-30)
 - Build instalado em `/usr/local` (`sudo meson install -C build`), sombreando
   o pacote `imv 5.0.1-2` do pacman (que permanece intacto em `/usr`).
