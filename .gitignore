@@ -2,3 +2,12 @@ imv
 *.o
 test_*
 build/
+
+# meson wrap artifacts (quando extraídos na árvore de fontes)
+subprojects/packagecache/
+subprojects/inih-*/
+
+# ruído de editor/SO
+*.swp
+*~
+.DS_Store
