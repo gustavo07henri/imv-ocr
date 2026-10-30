@@ -2,6 +2,8 @@
 
 **Última atualização:** 2026-10-30
 **Branch:** `ocr-feature` (baseada na tag `v5.0.1`)
+**Publicado em:** https://github.com/gustavo07henri/imv-ocr (público;
+`origin` = GitHub, `upstream` = sr.ht original para futuros merges)
 
 ## O que foi feito
 
