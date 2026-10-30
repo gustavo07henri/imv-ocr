@@ -59,3 +59,17 @@ r = reset
 # Slideshow control
 t = slideshow +1
 <Shift+T> = slideshow -1
+
+# OCR (requer imv compilado com suporte a tesseract)
+<Shift+O> = ocr
+<Escape> = ocr_clear
+<Ctrl+a> = ocr_select_all
+<Ctrl+c> = ocr_copy
+
+# Binds de OCR por idioma (requerem o pacote tesseract-data-<lang> instalado).
+# Exemplos:
+# <Shift+P> = ocr por       # português
+# <Shift+E> = ocr spa       # espanhol
+# <Shift+J> = ocr jpn       # japonês
+# <Shift+M> = ocr chi_sim   # mandarim simplificado
+# Idiomas combinados também funcionam: <Shift+U> = ocr por+eng

@@ -35,6 +35,19 @@ passing `-D libpng=enabled` or `-D libtiff=disabled`.
 You can also make sure all the backends are enabled by passing
 `-D auto_features=enabled`.
 
+### 3. OCR support (optional)
+
+imv can perform optical character recognition on the current image (the
+`ocr`, `ocr_clear` and `ocr_copy` commands) when built against
+`tesseract`. This is auto-detected like the backends and can be controlled
+with `-D tesseract=enabled` or `-D tesseract=disabled`.
+
+At runtime, OCR needs the tesseract language data (`tesseract-data-eng`,
+`tesseract-data-por`, `tesseract-data-spa`, `tesseract-data-jpn`,
+`tesseract-data-chi_sim`, ...) and, for copying to the clipboard, either
+`wl-clipboard` (Wayland) or `xclip` (X11). You may want to list these as
+optional/runtime dependencies.
+
 ## Building `imv`
 
 Once your backends have been configured and you've confirmed the library

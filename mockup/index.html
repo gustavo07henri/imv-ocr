@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>imv + OCR — mockup de design</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Barra de título simulando o overlay de informações do imv -->
+  <header class="imv-titlebar">imv — pagina_escaneada.png&nbsp;&nbsp;[1/1]&nbsp;&nbsp;2480×3508&nbsp;&nbsp;42%</header>
+
+  <!-- Área de exibição (equivalente ao canvas do imv) -->
+  <main class="stage" id="stage">
+
+    <!-- "Imagem" simulada: uma página escaneada -->
+    <div class="page" id="page">
+      <div class="paper-noise"></div>
+      <div class="page-content">
+        <h1 class="t">Contrato de Prestação de Serviços</h1>
+        <p class="t">Pelo presente instrumento particular, de um lado</p>
+        <p class="t"><strong>CONTRATANTE:</strong> Maria Silva Andrade, brasileira,</p>
+        <p class="t">empresária, inscrita no CPF sob o nº 123.456.789-00,</p>
+        <p class="t">com sede na Rua das Flores, 1234 — Curitiba/PR;</p>
+        <p class="t">&nbsp;</p>
+        <p class="t"><strong>CONTRATADO:</strong> João Pereira Santos, brasileiro,</p>
+        <p class="t">desenvolvedor, inscrito no CPF sob o nº 987.654.321-00,</p>
+        <p class="t">residente na Av. Sete de Setembro, 567 — Curitiba/PR;</p>
+        <p class="t">&nbsp;</p>
+        <p class="t"><strong>Cláusula 1ª</strong> — O objeto do presente contrato é o</p>
+        <p class="t">desenvolvimento de um visualizador de imagens com</p>
+        <p class="t">reconhecimento óptico de caracteres (OCR) integrado,</p>
+        <p class="t">conforme especificações do Anexo I.</p>
+        <p class="t">&nbsp;</p>
+        <p class="t"><strong>Cláusula 2ª</strong> — O prazo de entrega é de 30 (trinta)</p>
+        <p class="t">dias, contados a partir da assinatura deste instrumento.</p>
+        <p class="t">&nbsp;</p>
+        <p class="t">Curitiba, 29 de outubro de 2026.</p>
+        <p class="t">&nbsp;</p>
+        <p class="t signature">_______________________________</p>
+        <p class="t signature">Maria Silva Andrade — Contratante</p>
+      </div>
+    </div>
+
+    <!-- Camada de resultado do OCR (texto selecionável sobreposto) -->
+    <div class="ocr-layer" id="ocrLayer" hidden></div>
+
+    <!-- Linha de varredura exibida durante o processamento -->
+    <div class="scanline" id="scanline" hidden></div>
+
+    <!-- Botão OCR com efeito vidro -->
+    <button class="ocr-btn" id="ocrBtn" title="Extrair texto (tecla O)">
+      <img class="icon" src="assets/icone_scanear_pagina.svg" alt="OCR">
+      <span class="spinner" hidden></span>
+    </button>
+
+    <!-- Barra de status estilo console do imv -->
+    <div class="statusbar" id="statusbar" hidden></div>
+
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

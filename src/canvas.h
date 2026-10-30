@@ -26,6 +26,11 @@ void imv_canvas_resize(struct imv_canvas *canvas, int width, int height);
 /* Blank the canvas to be empty and transparent */
 void imv_canvas_clear(struct imv_canvas *canvas);
 
+/* Access the canvas' cairo context for custom drawing. The context remains
+ * owned by the canvas; callers must not destroy it, and should wrap their
+ * drawing in cairo_save/cairo_restore. */
+cairo_t *imv_canvas_cairo(struct imv_canvas *canvas);
+
 /* Set the current drawing color of the canvas */
 void imv_canvas_color(struct imv_canvas *canvas, float r, float g, float b, float a);
 

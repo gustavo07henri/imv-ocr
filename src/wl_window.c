@@ -412,6 +412,7 @@ static void pointer_frame(void *data, struct wl_pointer *pointer)
       }
     };
     imv_window_push_event(window, &e);
+    window->pointer.change.dmouse1 = false;
   }
 
   if (window->pointer.change.scroll_dx || window->pointer.change.scroll_dy) {

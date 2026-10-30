@@ -112,6 +112,11 @@ void imv_canvas_resize(struct imv_canvas *canvas, int width, int height)
   assert(canvas->cairo);
 }
 
+cairo_t *imv_canvas_cairo(struct imv_canvas *canvas)
+{
+  return canvas->cairo;
+}
+
 void imv_canvas_clear(struct imv_canvas *canvas)
 {
   cairo_save(canvas->cairo);

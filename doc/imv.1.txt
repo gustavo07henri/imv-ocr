@@ -172,6 +172,31 @@ Commands can be entered by pressing *:*. imv supports the following commands:
 	file, but without an equals sign between the keys and the commands. For
 	more information on syntax, see **imv**(5).
 
+*ocr* [language]::
+	Run optical character recognition on the current image, highlighting the
+	detected words. Text can then be selected with character precision by
+	dragging the mouse — the selection follows the caret nearest to the
+	cursor, as in a text editor. Double-clicking selects a whole word,
+	triple-clicking selects a whole line.
+	The language defaults to 'eng'; pass another tesseract language code
+	to change it, e.g. 'por', 'spa', 'jpn', 'chi_sim', or a combination like
+	'por+eng'. The matching tesseract language data must be installed.
+	Requires imv to be built with tesseract support. Setting the
+	'IMV_OCR_DEBUG' environment variable shows a debug status line and logs
+	selection events (press/drag/release) to stderr.
+
+*ocr_clear*::
+	Dismiss the OCR overlay. If a selection is active it is dropped first,
+	and only a second invocation clears the whole overlay.
+
+*ocr_select_all*::
+	Select all recognised text.
+
+*ocr_copy*::
+	Copy the currently selected text to the clipboard. Does nothing when
+	no selection has been made. Uses 'wl-copy' on Wayland or 'xclip' on
+	X11.
+
 Default Binds
 -------------
 
@@ -263,6 +288,18 @@ imv comes with several binds configured by default
 
 *T*::
 	Stop slideshow/decrease delay by 1 second
+
+*Shift+O*::
+	Run OCR on the current image
+
+*Escape*::
+	Drop the OCR selection, then clear the OCR overlay
+
+*Ctrl+a*::
+	Select all recognised OCR text
+
+*Ctrl+c*::
+	Copy the selected OCR text to the clipboard
 
 Configuration
 -------------

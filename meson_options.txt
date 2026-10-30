@@ -121,3 +121,11 @@ option('qoi',
   type : 'feature',
   description : 'provides: qoi'
 )
+
+# tesseract https://github.com/tesseract-ocr/tesseract
+# depends: leptonica
+# license: Apache-2.0
+option('tesseract',
+  type : 'feature',
+  description : 'provides: ocr command'
+)

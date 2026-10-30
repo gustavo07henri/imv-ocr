@@ -146,4 +146,21 @@ called 'less', '>' is called 'greater'.
 A complete list of keysyms can also be found on most systems with the
 'dumpkeys -l' command.
 
+OCR
+---
+
+If imv is built with tesseract support, the OCR commands ('ocr',
+'ocr_clear', 'ocr_select_all', 'ocr_copy' — see **imv**(1)) can be bound
+like any other command:
+
+  <Shift+O> = ocr
+  <Escape> = ocr_clear
+  <Ctrl+a> = ocr_select_all
+  <Ctrl+c> = ocr_copy
+
+A language can be baked into the bind, e.g. '<Shift+P> = ocr por'. Any
+tesseract language for which data is installed can be used, e.g.
+'ocr spa' (Spanish), 'ocr jpn' (Japanese), 'ocr chi_sim' (Simplified
+Chinese), or combinations like 'ocr por+eng'.
+
 **imv**(1)

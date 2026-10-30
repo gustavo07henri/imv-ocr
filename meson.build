@@ -171,6 +171,13 @@ foreach backend : [
   endif
 endforeach
 
+dep_tesseract = dependency('tesseract', required: get_option('tesseract'))
+if dep_tesseract.found()
+  deps_for_imv += dep_tesseract
+  files_common += files('src/ocr.c')
+  add_project_arguments('-DIMV_ENABLE_TESSERACT', language: 'c')
+endif
+
 libimv = static_library(
   'imv',
   files_common,
@@ -315,5 +322,6 @@ endif
 message('\n\n'
 + 'Building imv @0@\n\n'.format(meson.project_version())
 + 'Window systems enabled:\n- ' + '\n- '.join(enabled_window_systems) + '\n\n'
-+ 'Backends enabled:\n- ' + '\n- '.join(enabled_backends) + '\n'
++ 'Backends enabled:\n- ' + '\n- '.join(enabled_backends) + '\n\n'
++ 'OCR (tesseract): @0@\n'.format(dep_tesseract.found() ? 'enabled' : 'disabled')
 )

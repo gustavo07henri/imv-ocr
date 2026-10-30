@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <limits.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,6 +31,14 @@
 #include "sys/types.h"
 #include "viewport.h"
 #include "window.h"
+
+#ifdef IMV_ENABLE_TESSERACT
+#include "ocr.h"
+#endif
+
+#ifdef IMV_BACKEND_LIBRSVG
+#include <librsvg/rsvg.h>
+#endif
 
 /* Some systems like GNU/Hurd don't define PATH_MAX */
 #ifndef PATH_MAX
@@ -197,6 +206,28 @@ struct imv {
   /* if reading an image from stdin, this is the buffer for it */
   void *stdin_image_data;
   size_t stdin_image_data_len;
+
+#ifdef IMV_ENABLE_TESSERACT
+  /* OCR overlay state */
+  struct {
+    bool active;               /* overlay visible */
+    struct imv_ocr *engine;    /* lazily created, reused between runs */
+    char *engine_lang;         /* language the engine was created with */
+    struct imv_ocr_result *result;
+    bool selecting;            /* user is dragging a selection */
+    bool has_selection;        /* a selection was made */
+    size_t sel_anchor, sel_focus; /* caret positions into result->chars */
+    /* click counting: single click = caret, double = word, triple = line */
+    unsigned click_count;
+    uint64_t last_press_ms;
+    double last_press_x, last_press_y;
+    /* glass button geometry, in framebuffer pixels */
+    double btn_x, btn_y, btn_size;
+#ifdef IMV_BACKEND_LIBRSVG
+    RsvgHandle *icon;
+#endif
+  } ocr;
+#endif
 };
 
 static void command_quit(struct list *args, const char *argstr, void *data);
@@ -221,6 +252,20 @@ static void command_set_upscaling_method(struct list *args, const char *argstr, 
 static void command_set_slideshow_duration(struct list *args, const char *argstr, void *data);
 static void command_set_background(struct list *args, const char *argstr, void *data);
 static void command_bind(struct list *args, const char *argstr, void *data);
+static void command_ocr(struct list *args, const char *argstr, void *data);
+static void command_ocr_clear(struct list *args, const char *argstr, void *data);
+static void command_ocr_copy(struct list *args, const char *argstr, void *data);
+static void command_ocr_select_all(struct list *args, const char *argstr, void *data);
+
+static void ocr_clear_state(struct imv *imv);
+#ifdef IMV_ENABLE_TESSERACT
+static int ocr_debug(void);
+static size_t ocr_caret_at_point(struct imv *imv, double px, double py);
+static void ocr_select_word_at(struct imv *imv, size_t caret);
+static void ocr_select_line_at(struct imv *imv, size_t caret);
+static bool ocr_button_hit(struct imv *imv, double px, double py);
+static void draw_ocr_overlay(struct imv *imv, int w, int h, int ui_scale);
+#endif
 
 static bool setup_window(struct imv *imv);
 static void consume_internal_event(struct imv *imv, struct internal_event *event);
@@ -460,10 +505,98 @@ static void event_handler(void *data, const struct imv_event *e)
       key_handler(imv, e);
       break;
     case IMV_EVENT_MOUSE_MOTION:
+#ifdef IMV_ENABLE_TESSERACT
+      /* while the OCR overlay is active, dragging selects text
+       * instead of panning the image */
+      if (imv->ocr.active) {
+        if (imv->ocr.selecting && imv->ocr.result
+            && imv->ocr.result->char_count > 0) {
+          double x, y;
+          imv_window_get_mouse_position(imv->window, &x, &y);
+          size_t caret = ocr_caret_at_point(imv, x, y);
+          if (caret != imv->ocr.sel_focus) {
+            imv->ocr.sel_focus = caret;
+            imv->ocr.has_selection = imv->ocr.sel_anchor != imv->ocr.sel_focus;
+            imv->need_redraw = true;
+            if (ocr_debug()) {
+              imv_log(IMV_INFO, "ocr: drag caret=%zu selection=%d\n",
+                  caret, imv->ocr.has_selection);
+            }
+          }
+        }
+        break;
+      }
+#endif
       if (imv_window_get_mouse_button(imv->window, 1)) {
         imv_viewport_move(imv->view, e->data.mouse_motion.dx,
             e->data.mouse_motion.dy, imv->current_image);
       }
+      break;
+    case IMV_EVENT_MOUSE_BUTTON:
+#ifdef IMV_ENABLE_TESSERACT
+      if (e->data.mouse_button.button == 1) {
+        if (e->data.mouse_button.pressed) {
+          double x, y;
+          imv_window_get_mouse_position(imv->window, &x, &y);
+          if (ocr_button_hit(imv, x, y)) {
+            if (imv->ocr.active) {
+              ocr_clear_state(imv);
+              imv->need_redraw = true;
+            } else {
+              struct list *no_args = list_from_string("ocr", ' ');
+              command_ocr(no_args, "", imv);
+              list_deep_free(no_args);
+            }
+            break;
+          }
+          if (imv->ocr.active && imv->ocr.result
+              && imv->ocr.result->char_count > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            const uint64_t now_ms = (uint64_t)ts.tv_sec * 1000
+              + (uint64_t)ts.tv_nsec / 1000000;
+            const double dx = x - imv->ocr.last_press_x;
+            const double dy = y - imv->ocr.last_press_y;
+            if (now_ms - imv->ocr.last_press_ms < 400
+                && dx * dx + dy * dy < 64) {
+              imv->ocr.click_count += 1;
+            } else {
+              imv->ocr.click_count = 1;
+            }
+            imv->ocr.last_press_ms = now_ms;
+            imv->ocr.last_press_x = x;
+            imv->ocr.last_press_y = y;
+
+            imv->ocr.selecting = true;
+            const size_t caret = ocr_caret_at_point(imv, x, y);
+            if (imv->ocr.click_count >= 3) {
+              ocr_select_line_at(imv, caret);
+            } else if (imv->ocr.click_count == 2) {
+              ocr_select_word_at(imv, caret);
+            } else {
+              imv->ocr.sel_anchor = imv->ocr.sel_focus = caret;
+              imv->ocr.has_selection = false;
+            }
+            if (ocr_debug()) {
+              imv_log(IMV_INFO,
+                  "ocr: press at (%.0f,%.0f) caret=%zu clicks=%u selection=%d\n",
+                  x, y, caret, imv->ocr.click_count, imv->ocr.has_selection);
+            }
+            imv->need_redraw = true;
+          }
+        } else {
+          if (imv->ocr.selecting && ocr_debug()) {
+            imv_log(IMV_INFO, "ocr: release, selection=%d [%zu..%zu)\n",
+                imv->ocr.has_selection,
+                imv->ocr.sel_anchor < imv->ocr.sel_focus
+                  ? imv->ocr.sel_anchor : imv->ocr.sel_focus,
+                imv->ocr.sel_anchor < imv->ocr.sel_focus
+                  ? imv->ocr.sel_focus : imv->ocr.sel_anchor);
+          }
+          imv->ocr.selecting = false;
+        }
+      }
+#endif
       break;
     case IMV_EVENT_MOUSE_SCROLL:
       {
@@ -600,6 +733,10 @@ struct imv *imv_create(void)
   imv_command_register(imv->commands, "slideshow", &command_set_slideshow_duration);
   imv_command_register(imv->commands, "background", &command_set_background);
   imv_command_register(imv->commands, "bind", &command_bind);
+  imv_command_register(imv->commands, "ocr", &command_ocr);
+  imv_command_register(imv->commands, "ocr_clear", &command_ocr_clear);
+  imv_command_register(imv->commands, "ocr_copy", &command_ocr_copy);
+  imv_command_register(imv->commands, "ocr_select_all", &command_ocr_select_all);
 
   imv_command_alias(imv->commands, "q", "quit");
   imv_command_alias(imv->commands, "n", "next");
@@ -645,6 +782,10 @@ struct imv *imv_create(void)
   add_bind(imv, "<space>", "toggle_playing");
   add_bind(imv, "t", "slideshow +1");
   add_bind(imv, "<Shift+T>", "slideshow -1");
+  add_bind(imv, "<Shift+O>", "ocr");
+  add_bind(imv, "<Escape>", "ocr_clear");
+  add_bind(imv, "<Ctrl+a>", "ocr_select_all");
+  add_bind(imv, "<Ctrl+c>", "ocr_copy");
 
   return imv;
 }
@@ -677,6 +818,17 @@ void imv_free(struct imv *imv)
   if (imv->window) {
     imv_window_free(imv->window);
   }
+
+#ifdef IMV_ENABLE_TESSERACT
+  imv_ocr_free(imv->ocr.engine);
+  free(imv->ocr.engine_lang);
+  imv_ocr_result_free(imv->ocr.result);
+#ifdef IMV_BACKEND_LIBRSVG
+  if (imv->ocr.icon) {
+    g_object_unref(imv->ocr.icon);
+  }
+#endif
+#endif
 
   backends_free(imv->backends);
 
@@ -1322,6 +1474,7 @@ static void consume_internal_event(struct imv *imv, struct internal_event *event
   if (event->type == NEW_IMAGE) {
     /* New image vs just a new frame of the same image */
     if (event->data.new_image.is_new_image) {
+      ocr_clear_state(imv);
       handle_new_image(imv, event->data.new_image.image, event->data.new_image.frametime);
     } else {
       handle_new_frame(imv, event->data.new_image.image, event->data.new_image.frametime);
@@ -1404,6 +1557,10 @@ static void render_window(struct imv *imv)
   int w, h;
   imv_window_get_framebuffer_size(imv->window, &w, &h);
   int ui_scale = imv_window_get_scale(imv->window);
+
+#ifdef IMV_ENABLE_TESSERACT
+  draw_ocr_overlay(imv, w, h, ui_scale);
+#endif
 
   /* if the overlay needs to be drawn, draw that too */
   if (imv->overlay.enabled) {
@@ -2111,5 +2268,506 @@ static size_t read_from_stdin(void **buffer)
   return len;
 }
 
+static void ocr_clear_state(struct imv *imv)
+{
+#ifdef IMV_ENABLE_TESSERACT
+  imv->ocr.active = false;
+  imv->ocr.selecting = false;
+  imv->ocr.has_selection = false;
+  if (imv->ocr.result) {
+    imv_ocr_result_free(imv->ocr.result);
+    imv->ocr.result = NULL;
+  }
+#else
+  (void)imv;
+#endif
+}
+
+#ifdef IMV_ENABLE_TESSERACT
+
+/* Icon of the OCR button: a scan frame over lines of text.
+ * Same artwork as mockup/assets/icone_scanear_pagina.svg, with a light
+ * stroke to stay visible on the translucent button. */
+static const char ocr_icon_svg[] =
+  "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+  "<g fill='none' stroke='#f5f5f5' stroke-width='4' stroke-linecap='round'"
+  " stroke-linejoin='round'>"
+  "<path d='M23 10H18a6 6 0 0 0-6 6v6'/>"
+  "<path d='M41 10h5a6 6 0 0 1 6 6v6'/>"
+  "<path d='M12 42v6a6 6 0 0 0 6 6h5'/>"
+  "<path d='M41 54h5a6 6 0 0 0 6-6v-6'/>"
+  "<path d='M23 23h18'/>"
+  "<path d='M17 32h30'/>"
+  "<path d='M23 41h18'/>"
+  "</g></svg>";
+
+static void ocr_word_window_rect(struct imv *imv, const struct imv_ocr_word *word,
+    double *x, double *y, double *w, double *h)
+{
+  int ox, oy;
+  double scale;
+  imv_viewport_get_offset(imv->view, &ox, &oy);
+  imv_viewport_get_scale(imv->view, &scale);
+  *x = ox + word->x * scale;
+  *y = oy + word->y * scale;
+  *w = word->w * scale;
+  *h = word->h * scale;
+}
+
+static void ocr_char_window_rect(struct imv *imv, const struct imv_ocr_char *ch,
+    double *x, double *y, double *w, double *h)
+{
+  int ox, oy;
+  double scale;
+  imv_viewport_get_offset(imv->view, &ox, &oy);
+  imv_viewport_get_scale(imv->view, &scale);
+  *x = ox + ch->x * scale;
+  *y = oy + ch->y * scale;
+  *w = ch->w * scale;
+  *h = ch->h * scale;
+}
+
+static int ocr_debug(void)
+{
+  static int enabled = -1;
+  if (enabled < 0) {
+    enabled = getenv("IMV_OCR_DEBUG") != NULL;
+  }
+  return enabled;
+}
+
+/* Find the char range [begin, end) of the text line containing char idx */
+static void ocr_line_bounds(struct imv_ocr_result *result, size_t idx,
+    size_t *begin, size_t *end)
+{
+  size_t lo = idx;
+  while (lo > 0 && !result->chars[lo].line_start) {
+    --lo;
+  }
+  size_t hi = idx + 1;
+  while (hi < result->char_count && !result->chars[hi].line_start) {
+    ++hi;
+  }
+  *begin = lo;
+  *end = hi;
+}
+
+/* Map a window point to a caret position (0..char_count) in the OCR text,
+ * the way editors and PDF viewers do: first pick the text line vertically
+ * closest to the point, then walk that line left to right and stop before
+ * the first char whose center is past the point. Clicking in empty space
+ * beside or between lines therefore lands at a sensible line edge instead
+ * of jumping to an unrelated glyph. */
+static size_t ocr_caret_at_point(struct imv *imv, double px, double py)
+{
+  struct imv_ocr_result *result = imv->ocr.result;
+  const size_t n = result->char_count;
+
+  size_t line_begin = 0, line_end = n;
+  double best_vdist = -1;
+  for (size_t i = 0; i < n; ) {
+    size_t j;
+    ocr_line_bounds(result, i, &i, &j);
+
+    double y0 = 1e30, y1 = -1e30;
+    for (size_t k = i; k < j; ++k) {
+      double x, y, w, h;
+      ocr_char_window_rect(imv, &result->chars[k], &x, &y, &w, &h);
+      if (y < y0) {
+        y0 = y;
+      }
+      if (y + h > y1) {
+        y1 = y + h;
+      }
+    }
+
+    const double dv = py < y0 ? y0 - py : (py > y1 ? py - y1 : 0);
+    if (best_vdist < 0 || dv < best_vdist) {
+      best_vdist = dv;
+      line_begin = i;
+      line_end = j;
+    }
+    i = j;
+  }
+
+  for (size_t k = line_begin; k < line_end; ++k) {
+    double x, y, w, h;
+    ocr_char_window_rect(imv, &result->chars[k], &x, &y, &w, &h);
+    if (px < x + w / 2) {
+      return k;
+    }
+  }
+  return line_end;
+}
+
+/* Select the whole word around a caret */
+static void ocr_select_word_at(struct imv *imv, size_t caret)
+{
+  struct imv_ocr_result *result = imv->ocr.result;
+  size_t idx = caret > 0 ? caret - 1 : 0;
+  if (idx >= result->char_count) {
+    idx = result->char_count - 1;
+  }
+
+  size_t lo = idx;
+  while (lo > 0 && !result->chars[lo].word_start) {
+    --lo;
+  }
+  size_t hi = idx + 1;
+  while (hi < result->char_count && !result->chars[hi].word_start) {
+    ++hi;
+  }
+
+  imv->ocr.sel_anchor = lo;
+  imv->ocr.sel_focus = hi;
+  imv->ocr.has_selection = lo != hi;
+}
+
+/* Select the whole line around a caret */
+static void ocr_select_line_at(struct imv *imv, size_t caret)
+{
+  struct imv_ocr_result *result = imv->ocr.result;
+  size_t idx = caret > 0 ? caret - 1 : 0;
+  if (idx >= result->char_count) {
+    idx = result->char_count - 1;
+  }
+
+  size_t lo, hi;
+  ocr_line_bounds(result, idx, &lo, &hi);
+  imv->ocr.sel_anchor = lo;
+  imv->ocr.sel_focus = hi;
+  imv->ocr.has_selection = lo != hi;
+}
+
+static bool ocr_button_hit(struct imv *imv, double px, double py)
+{
+  return imv->ocr.btn_size > 0
+    && px >= imv->ocr.btn_x && px <= imv->ocr.btn_x + imv->ocr.btn_size
+    && py >= imv->ocr.btn_y && py <= imv->ocr.btn_y + imv->ocr.btn_size;
+}
+
+static void cairo_rounded_rectangle(cairo_t *cr, double x, double y,
+    double w, double h, double r)
+{
+  cairo_new_sub_path(cr);
+  cairo_arc(cr, x + w - r, y + r,     r, -M_PI_2, 0);
+  cairo_arc(cr, x + w - r, y + h - r, r, 0, M_PI_2);
+  cairo_arc(cr, x + r,     y + h - r, r, M_PI_2, M_PI);
+  cairo_arc(cr, x + r,     y + r,     r, M_PI, 3 * M_PI_2);
+  cairo_close_path(cr);
+}
+
+static void draw_ocr_overlay(struct imv *imv, int w, int h, int ui_scale)
+{
+  struct imv_ocr_result *result = imv->ocr.result;
+  cairo_t *cr = imv_canvas_cairo(imv->canvas);
+  cairo_save(cr);
+
+  double rotation;
+  bool mirrored;
+  imv_viewport_get_rotation(imv->view, &rotation);
+  imv_viewport_get_mirrored(imv->view, &mirrored);
+  const bool axis_aligned = !mirrored && rotation == 0.0;
+
+  if (imv->ocr.active && result && axis_aligned) {
+    const double pad = 2 * ui_scale;
+
+    /* dim everything except the detected word boxes, so the text areas
+     * stay bright against the darkened image */
+    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+    cairo_rectangle(cr, 0, 0, w, h);
+    for (size_t i = 0; i < result->count; ++i) {
+      double x, y, bw, bh;
+      ocr_word_window_rect(imv, &result->words[i], &x, &y, &bw, &bh);
+      cairo_rectangle(cr, x - pad, y - pad, bw + 2 * pad, bh + 2 * pad);
+    }
+    cairo_set_source_rgba(cr, 0, 0, 0, 0.58);
+    cairo_fill(cr);
+    cairo_set_fill_rule(cr, CAIRO_FILL_RULE_WINDING);
+
+    /* word boxes */
+    for (size_t i = 0; i < result->count; ++i) {
+      double x, y, bw, bh;
+      ocr_word_window_rect(imv, &result->words[i], &x, &y, &bw, &bh);
+
+      cairo_rectangle(cr, x - pad, y - pad, bw + 2 * pad, bh + 2 * pad);
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.10);
+      cairo_fill(cr);
+
+      cairo_rectangle(cr, x - pad, y - pad, bw + 2 * pad, bh + 2 * pad);
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.18);
+      cairo_set_line_width(cr, ui_scale);
+      cairo_stroke(cr);
+    }
+
+    /* selection: contiguous runs of chars on the same line, merged so the
+     * highlight looks like regular text selection */
+    if (imv->ocr.has_selection && result->char_count > 0) {
+      size_t lo = imv->ocr.sel_anchor < imv->ocr.sel_focus
+        ? imv->ocr.sel_anchor : imv->ocr.sel_focus;
+      size_t hi = imv->ocr.sel_anchor < imv->ocr.sel_focus
+        ? imv->ocr.sel_focus : imv->ocr.sel_anchor;
+      if (hi > result->char_count) {
+        hi = result->char_count;
+      }
+
+      size_t i = lo;
+      while (i < hi) {
+        double x, y, cw, ch;
+        ocr_char_window_rect(imv, &result->chars[i], &x, &y, &cw, &ch);
+        double x1 = x + cw;
+
+        size_t j = i + 1;
+        while (j < hi && !result->chars[j].line_start) {
+          double nx, ny, nw, nh;
+          ocr_char_window_rect(imv, &result->chars[j], &nx, &ny, &nw, &nh);
+          x1 = nx + nw;
+          j++;
+        }
+
+        cairo_rectangle(cr, x, y, x1 - x, ch);
+        cairo_set_source_rgba(cr, 0.31, 0.63, 1.0, 0.45);
+        cairo_fill(cr);
+        i = j;
+      }
+    }
+
+    /* debug status line, bottom left — only with IMV_OCR_DEBUG set */
+    if (ocr_debug()) {
+      char status[128];
+      snprintf(status, sizeof status,
+          "ocr: %zu palavras, %zu chars — arraste seleciona, Ctrl+A tudo, Ctrl+C copia, Esc limpa",
+          result->count, result->char_count);
+      PangoLayout *layout = imv_canvas_make_layout(imv->canvas, status);
+      int text_w, text_h;
+      pango_layout_get_pixel_size(layout, &text_w, &text_h);
+      const int margin = 12 * ui_scale;
+      imv_canvas_color(imv->canvas, 0, 0, 0, 0.6);
+      imv_canvas_fill_rectangle(imv->canvas, margin, h - text_h - margin - 4,
+          text_w + 12, text_h + 8);
+      imv_canvas_color(imv->canvas, 1, 1, 1, 0.9);
+      imv_canvas_show_layout(imv->canvas, margin + 6, h - text_h - margin, layout);
+      g_object_unref(layout);
+    }
+  }
+
+  /* glass button, bottom right */
+  {
+    const double size = 56 * ui_scale;
+    const double margin = 24 * ui_scale;
+    const double bx = w - size - margin;
+    const double by = h - size - margin;
+    imv->ocr.btn_x = bx;
+    imv->ocr.btn_y = by;
+    imv->ocr.btn_size = size;
+
+    cairo_rounded_rectangle(cr, bx, by, size, size, 14 * ui_scale);
+    if (imv->ocr.active) {
+      cairo_set_source_rgba(cr, 0.47, 0.86, 0.55, 0.22);
+    } else {
+      cairo_set_source_rgba(cr, 1, 1, 1, 0.14);
+    }
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.28);
+    cairo_set_line_width(cr, ui_scale);
+    cairo_stroke(cr);
+
+    bool icon_drawn = false;
+#ifdef IMV_BACKEND_LIBRSVG
+#if LIBRSVG_CHECK_VERSION(2, 46, 0)
+    if (!imv->ocr.icon) {
+      imv->ocr.icon = rsvg_handle_new_from_data(
+          (const unsigned char *)ocr_icon_svg, strlen(ocr_icon_svg), NULL);
+    }
+    if (imv->ocr.icon) {
+      const double isize = 30 * ui_scale;
+      cairo_save(cr);
+      cairo_translate(cr, bx + (size - isize) / 2, by + (size - isize) / 2);
+      cairo_scale(cr, isize / 64.0, isize / 64.0);
+      const RsvgRectangle viewport = {0, 0, 64, 64};
+      rsvg_handle_render_document(imv->ocr.icon, cr, &viewport, NULL);
+      cairo_restore(cr);
+      icon_drawn = true;
+    }
+#endif
+#endif
+    if (!icon_drawn) {
+      imv_canvas_color(imv->canvas, 1, 1, 1, 0.9);
+      imv_canvas_printf(imv->canvas, bx + 12 * ui_scale,
+          by + size / 2 - 8 * ui_scale, "OCR");
+    }
+  }
+
+  cairo_restore(cr);
+}
+
+static char *ocr_selection_text(struct imv *imv)
+{
+  struct imv_ocr_result *result = imv->ocr.result;
+  size_t lo = imv->ocr.sel_anchor < imv->ocr.sel_focus
+    ? imv->ocr.sel_anchor : imv->ocr.sel_focus;
+  size_t hi = imv->ocr.sel_anchor < imv->ocr.sel_focus
+    ? imv->ocr.sel_focus : imv->ocr.sel_anchor;
+  if (hi > result->char_count) {
+    hi = result->char_count;
+  }
+  if (lo >= hi) {
+    return NULL;
+  }
+
+  size_t capacity = 1;
+  for (size_t i = lo; i < hi; ++i) {
+    capacity += strlen(result->chars[i].text) + 1;
+  }
+
+  char *text = malloc(capacity);
+  if (!text) {
+    return NULL;
+  }
+  text[0] = '\0';
+
+  for (size_t i = lo; i < hi; ++i) {
+    if (i > lo) {
+      const struct imv_ocr_char *cur = &result->chars[i];
+      if (cur->line_start) {
+        strcat(text, "\n");
+      } else if (cur->word_start
+          && !(cur->text[1] == '\0' && strchr(",.;:!?%)]}", cur->text[0]))) {
+        /* space between words, but not before trailing punctuation */
+        strcat(text, " ");
+      }
+    }
+    strcat(text, result->chars[i].text);
+  }
+  return text;
+}
+
+static void ocr_copy_to_clipboard(const char *text)
+{
+  const char *wayland_display = getenv("WAYLAND_DISPLAY");
+  const char *cmd = (wayland_display && *wayland_display)
+    ? "wl-copy"
+    : "xclip -selection clipboard";
+
+  FILE *pipe = popen(cmd, "w");
+  if (!pipe) {
+    imv_log(IMV_ERROR, "ocr: failed to run %s\n", cmd);
+    return;
+  }
+  fwrite(text, 1, strlen(text), pipe);
+  pclose(pipe);
+}
+
+#endif /* IMV_ENABLE_TESSERACT */
+
+static void command_ocr(struct list *args, const char *argstr, void *data)
+{
+  (void)argstr;
+  struct imv *imv = data;
+#ifdef IMV_ENABLE_TESSERACT
+  if (!imv->current_image) {
+    imv_log(IMV_ERROR, "ocr: no image loaded\n");
+    return;
+  }
+
+  struct imv_bitmap *bmp = imv_image_get_bitmap(imv->current_image);
+  if (!bmp) {
+    imv_log(IMV_ERROR, "ocr: current image has no raster data\n");
+    return;
+  }
+
+  const char *lang = args->len >= 2 ? args->items[1] : "eng";
+  if (!imv->ocr.engine || strcmp(imv->ocr.engine_lang, lang) != 0) {
+    imv_ocr_free(imv->ocr.engine);
+    free(imv->ocr.engine_lang);
+    imv->ocr.engine = imv_ocr_create(lang);
+    imv->ocr.engine_lang = imv->ocr.engine ? strdup(lang) : NULL;
+    if (!imv->ocr.engine) {
+      imv_log(IMV_ERROR, "ocr: failed to initialise tesseract for language "
+          "'%s' (is the tessdata package installed?)\n", lang);
+      return;
+    }
+  }
+
+  ocr_clear_state(imv);
+  imv->ocr.result = imv_ocr_run(imv->ocr.engine, bmp);
+  if (!imv->ocr.result) {
+    imv_log(IMV_ERROR, "ocr: text recognition failed\n");
+    return;
+  }
+
+  imv->ocr.active = true;
+  imv->need_redraw = true;
+#else
+  (void)args;
+  imv_log(IMV_ERROR, "ocr: imv was built without tesseract support\n");
+#endif
+}
+
+static void command_ocr_clear(struct list *args, const char *argstr, void *data)
+{
+  (void)args;
+  (void)argstr;
+  struct imv *imv = data;
+#ifdef IMV_ENABLE_TESSERACT
+  /* two-stage dismiss, like editors: an active selection is dropped first,
+   * and only a second invocation clears the whole overlay */
+  if (imv->ocr.active && imv->ocr.has_selection) {
+    imv->ocr.has_selection = false;
+    imv->ocr.sel_anchor = imv->ocr.sel_focus;
+  } else {
+    ocr_clear_state(imv);
+  }
+  imv->need_redraw = true;
+#else
+  (void)imv;
+#endif
+}
+
+static void command_ocr_select_all(struct list *args, const char *argstr, void *data)
+{
+  (void)args;
+  (void)argstr;
+  struct imv *imv = data;
+#ifdef IMV_ENABLE_TESSERACT
+  if (!imv->ocr.active || !imv->ocr.result || imv->ocr.result->char_count == 0) {
+    return;
+  }
+  imv->ocr.sel_anchor = 0;
+  imv->ocr.sel_focus = imv->ocr.result->char_count;
+  imv->ocr.has_selection = true;
+  imv->need_redraw = true;
+#else
+  (void)imv;
+#endif
+}
+
+static void command_ocr_copy(struct list *args, const char *argstr, void *data)
+{
+  (void)args;
+  (void)argstr;
+  struct imv *imv = data;
+#ifdef IMV_ENABLE_TESSERACT
+  if (!imv->ocr.active || !imv->ocr.result) {
+    return;
+  }
+
+  if (!imv->ocr.has_selection) {
+    imv_log(IMV_INFO, "ocr: no selection — drag over text to select it, or Ctrl+A for all\n");
+    return;
+  }
+
+  char *text = ocr_selection_text(imv);
+  if (!text) {
+    return;
+  }
+
+  ocr_copy_to_clipboard(text);
+  imv_log(IMV_INFO, "ocr: copied to clipboard\n");
+  free(text);
+#else
+  (void)imv;
+#endif
+}
 
 /* vim:set ts=2 sts=2 sw=2 et: */
